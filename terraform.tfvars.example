@@ -1,0 +1,46 @@
+# Copy to terraform.tfvars and edit.
+# Set your token: export TF_VAR_hcloud_token="..." (or create .env)
+
+cluster_name       = "talos-k8s"
+talos_version      = "v1.12.4"
+kubernetes_version = "1.35.0"
+
+# Talos extensions (generates schematic ID via Image Factory)
+talos_extensions = ["siderolabs/qemu-guest-agent", "siderolabs/iscsi-tools", "siderolabs/util-linux-tools"]
+
+# Control plane
+control_plane_count       = 3
+control_plane_server_type = "cx33"   # 4 vCPU, 8GB RAM
+control_plane_locations   = ["nbg1"] # leave it like this and hope for the best
+
+# Worker node pools
+worker_nodepools = [
+  {
+    name        = "default"
+    count       = 3
+    server_type = "cx33" # 4 vCPU, 8GB RAM
+    locations   = ["nbg1"]
+  },
+]
+
+# VPN gateway
+enable_vpn      = true
+vpn_server_type = "cx33" # 2 vCPU, 4GB RAM
+
+# Locations & network
+location     = "nbg1"
+network_zone = "eu-central"
+
+# Component toggles
+enable_csi    = true
+enable_argocd = true
+
+# Component versions
+cilium_version         = "1.19.0"
+hcloud_ccm_version     = "1.30.0"
+hcloud_csi_version     = "2.19.0"
+argocd_version         = "9.4.2"
+metrics_server_version = "3.13.0"
+
+# Protection (enable for production)
+delete_protection = false

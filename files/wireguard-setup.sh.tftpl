@@ -1,0 +1,107 @@
+#!/bin/bash
+set -euo pipefail
+
+# Install WireGuard + cluster management tools
+apt-get update
+apt-get install -y wireguard qrencode curl
+
+# Install kubectl
+curl -fsSL "https://dl.k8s.io/release/v${kubernetes_version}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+rm /tmp/kubectl
+
+# Install helm
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Install talosctl (for etcd backups)
+curl -fsSL "https://github.com/siderolabs/talos/releases/download/${talos_version}/talosctl-linux-amd64" -o /tmp/talosctl
+install -o root -g root -m 0755 /tmp/talosctl /usr/local/bin/talosctl
+rm /tmp/talosctl
+
+# Enable IP forwarding
+cat > /etc/sysctl.d/99-wireguard.conf << EOF
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+sysctl --system
+
+# Generate server keys
+cd /etc/wireguard
+umask 077
+wg genkey | tee server_private.key | wg pubkey > server_public.key
+
+# Generate client keys
+wg genkey | tee client_private.key | wg pubkey > client_public.key
+
+SERVER_PRIVATE_KEY=$(cat server_private.key)
+SERVER_PUBLIC_KEY=$(cat server_public.key)
+CLIENT_PRIVATE_KEY=$(cat client_private.key)
+CLIENT_PUBLIC_KEY=$(cat client_public.key)
+
+# Get the public IP
+PUBLIC_IP=$(curl -s http://169.254.169.254/hetzner/v1/metadata/public-ipv4)
+
+# Auto-detect the private network interface (Hetzner attaches it as enp7s0 or ens10)
+PRIVATE_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(enp7s0|ens10)' | head -1)
+if [[ -z "$PRIVATE_IFACE" ]]; then
+    # Fallback: find the interface on the private network
+    PRIVATE_IFACE=$(ip -o addr show | grep '10\.0\.' | awk '{print $2}' | head -1)
+fi
+
+# Create server configuration
+cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+Address = ${wireguard_server_ip}/24
+ListenPort = ${wireguard_port}
+PrivateKey = $SERVER_PRIVATE_KEY
+PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; iptables -t nat -A POSTROUTING -o $PRIVATE_IFACE -j MASQUERADE; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE; iptables -t nat -D POSTROUTING -o $PRIVATE_IFACE -j MASQUERADE; iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT
+
+# Client 1
+[Peer]
+PublicKey = $CLIENT_PUBLIC_KEY
+AllowedIPs = ${client_ip}/32
+EOF
+
+# Create client configuration
+cat > /etc/wireguard/client.conf << EOF
+[Interface]
+Address = ${client_ip}/24
+PrivateKey = $CLIENT_PRIVATE_KEY
+DNS = 1.1.1.1, 8.8.8.8
+
+[Peer]
+PublicKey = $SERVER_PUBLIC_KEY
+Endpoint = $PUBLIC_IP:${wireguard_port}
+AllowedIPs = ${private_network}, ${wireguard_cidr}
+PersistentKeepalive = 25
+EOF
+
+# Set permissions
+chmod 600 /etc/wireguard/*.conf
+chmod 600 /etc/wireguard/*.key
+
+# Enable and start WireGuard
+systemctl enable wg-quick@wg0
+systemctl start wg-quick@wg0
+
+# Generate QR code for mobile clients
+qrencode -t ansiutf8 < /etc/wireguard/client.conf > /etc/wireguard/client_qr.txt
+
+# Create a script to display client config
+cat > /usr/local/bin/show-wireguard-config << 'SCRIPT'
+#!/bin/bash
+echo "=== WireGuard Client Configuration ==="
+echo ""
+cat /etc/wireguard/client.conf
+echo ""
+echo "=== QR Code (for mobile) ==="
+cat /etc/wireguard/client_qr.txt
+echo ""
+echo "=== Server Public Key ==="
+cat /etc/wireguard/server_public.key
+SCRIPT
+chmod +x /usr/local/bin/show-wireguard-config
+
+echo "WireGuard setup complete!"
+echo "Run 'show-wireguard-config' to display client configuration"
