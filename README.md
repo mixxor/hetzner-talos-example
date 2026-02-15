@@ -70,7 +70,7 @@ production, change the source to a versioned reference:
 
 ```hcl
 module "cluster" {
-  source = "github.com/mixxor/hetzner-talos?ref=v1.0.0"
+  source = "github.com/mixxor/hetzner-talos?ref=v0.0.2-alpha"
   # ...
 }
 ```
